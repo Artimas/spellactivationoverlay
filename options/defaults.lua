@@ -140,6 +140,9 @@ SAO.defaults = {
                 [48108] = { -- Hot Streak
                     [0] = true,
                 },
+                [400625] = { -- Hot Streak SOD
+                    [0] = true,
+                },
                 [64343] = { -- Impact
                     [0] = true,
                 },
@@ -157,6 +160,9 @@ SAO.defaults = {
                 },
                 [96215] = { -- Hot Streak + Heating Up (not an actual buff)
                     [0] = false,
+                },
+                [448777] = { -- Hot Streak SOD + Heating Up (not an actual buff)
+                [0] = false,
                 },
                 [5276] = { -- Representative of spells triggering Frozen effect
                     [0] = false,

@@ -1,4 +1,4 @@
-local AddonName, SAO = ...
+local AddonName, SAO = ...ice_lance_sod
 
 -- Optimize frequent calls
 local CombatLogGetCurrentEventInfo = CombatLogGetCurrentEventInfo
@@ -9,11 +9,11 @@ local UnitExists = UnitExists
 local UnitHealth = UnitHealth
 
 local clearcastingVariants; -- Lazy init in lazyCreateClearcastingVariants()
-
 local hotStreakSpellID = 48108;
-local heatingUpSpellID = 48107; -- Does not exist in Wrath Classic
+local heatingUpSpellID = 48107; -- Does not exist in Wrath Classic or SOD
 local hotStreakHeatingUpSpellID = hotStreakSpellID+heatingUpSpellID; -- Made up entirely, does not even exist in Retail
-
+local hotStreakSpellIDSOD = 400625;
+local hotStreakHeatingUpSpellIDSOD = hotStreakSpellIDSOD+heatingUpSpellID; -- Made up entirely, does not even exist in Retail
 -- Because the Heating Up buff does not exist in Wrath of the Lich King
 -- We try to guess when the mage should virtually get this buff
 local HotStreakHandler = {}
@@ -206,6 +206,154 @@ local function recheckTalents(self)
     end
 end
 
+local HotStreakHandlerSOD.init = function(self, spellName)
+    local fire_blast = { 2136, 2137, 2138, 8412, 8413, 10197, 10199 }
+    local fireball = { 133, 143, 145, 3140, 8400, 8401, 8402, 10148, 10149, 10150, 10151, 25306, 27070, 38692, 42832, 42833 }
+    local frostfire_bolt = { 401502};
+    -- local living_bomb = { 44457, 55359, 55360 } this is the DOT effect, which we do NOT want
+    local living_bomb = { 400613 }
+    local scorch = { 2948, 8444, 8445, 8446, 10205, 10206, 10207, 27073, 27074, 42858, 42859 }
+    -- local spellfire = {} there is a provision in the talent for the Spellfire ability but that might be a typo for Blefire Bolt?
+    
+    self.spells = {}
+    local function addSpellPack(spellPack)
+        for _, spellID in pairs(spellPack) do
+            self.spells[spellID] = true;
+        end
+    end
+    addSpellPack(fire_blast);
+    addSpellPack(fireball);
+    addSpellPack(frostfire_bolt);
+    addSpellPack(living_bomb);
+    addSpellPack(scorch);
+
+    -- There are 4 states possible: cold, heating_up, hot_streak and hot_streak_heating_up
+    -- The state always starts as cold
+    self.state = 'cold';
+    -- There is a known issue when the player disconnects with the virtual "Heating Up" buff, then reconnects
+    -- Ideally, we'd keep track of the virtual buff, but it's really hard to do, and sometimes not even possible
+    -- It's best not to over-design something to try to fix fringe cases, so we simply accept this limitation
+
+    -- Hot Streak can be banked or not
+    -- Banking means there was a Heating Up proc on a previous spec, then the mage changed spec and lost the talent
+    -- When the mage gets back the Hot Streak talent, the state comes back immediately to heating_up if it was banked
+    -- Always start as not banked, for the same reason the state always starts as cold
+    self.banked = false;
+end
+
+HotStreakHandlerSOD.isSpellTracked = function(self, spellID)
+    return self.spells[spellID];
+end
+
+HotStreakHandlerSOD.hasHotStreakTalent = function(self)
+    -- If the rune is learned it will return the value of 1. If it isn't learned it will return false
+    if ( not SAO:IsRuneSpellLearned(self, hotStreakSpellIDSOD)) then
+        return false;
+    end
+    
+    return 1;
+end
+
+local function hotStreakSODCLEU(self, ...)
+    local timestamp, event, _, sourceGUID, sourceName, sourceFlags, sourceRaidFlags, destGUID, destName, destFlags, destRaidFlags = CombatLogGetCurrentEventInfo() -- For all events
+
+    -- Special case: if player dies, we assumed the "Heating Up" virtual buff was lost
+    -- However, data suggest that Heating Up is *not* lost on death, invalidating the code below
+    -- The code is kept commented instead of removed, because Blizzard may change this behaviour
+    --if (event == "UNIT_DIED" and destGUID == UnitGUID("player")) then
+    --    if (HotStreakHandler.state == 'heating_up') then
+    --        deactivateHeatingUp(self, heatingUpSpellID);
+    --    elseif (HotStreakHandler.state == 'hot_streak_heating_up') then
+    --        deactivateHeatingUp(self, hotStreakHeatingUpSpellID);
+    --    end
+    --    HotStreakHandler.state = 'cold';
+    --    HotStreakHandler.banked = false;
+    --
+    --    return;
+    --end
+
+    -- Accept only certain events, and only when done by the player
+    if (event ~= "SPELL_DAMAGE"
+    and event ~= "SPELL_AURA_APPLIED"
+    and event ~= "SPELL_AURA_REFRESH"
+    and event ~= "SPELL_AURA_REMOVED") then return end
+    if (sourceGUID ~= UnitGUID("player")) then return end
+
+    local spellID, spellName, spellSchool = select(12, CombatLogGetCurrentEventInfo()) -- For SPELL_*
+
+    -- If Hot Streak buff was acquired or lost, we have our immediate answer
+    -- We assume there is no third charge i.e., if a crit occurs under Hot Streak buff, there is no hidden Heating Up
+    if (event == "SPELL_AURA_APPLIED") then
+        if (spellID == hotStreakSpellIDSOD) then
+            deactivateHeatingUp(self, heatingUpSpellIDSOD);
+            HotStreakHandlerSOD.state = 'hot_streak';
+        end
+        return;
+    elseif (event == "SPELL_AURA_REFRESH") then
+        if (spellID == hotStreakSpellIDSOD) then
+            deactivateHeatingUp(self, hotStreakHeatingUpSpellIDSOD);
+            HotStreakHandlerSOD.state = 'hot_streak';
+        end
+        return;
+    elseif (event == "SPELL_AURA_REMOVED") then
+        if (spellID == hotStreakSpellIDSOD) then
+            if (HotStreakHandlerSOD.state == 'hot_streak_heating_up') then
+                deactivateHeatingUp(self, hotStreakHeatingUpSpellIDSOD);
+                activateHeatingUp(self, heatingUpSpellIDSOD);
+                HotStreakHandlerSOD.state = 'heating_up';
+            else
+                HotStreakHandlerSOD.state = 'cold';
+            end
+        end
+        return;
+    end
+
+    -- The rest of the code is dedicated to try to catch the Heating Up buff, or if the buff is lost.
+
+    -- Must have the Hot Streak talent to go on
+    if (not HotStreakHandlerSOD:hasHotStreakTalent()) then return end
+
+    -- Spell must be match a known spell ID that can proc Hot Streak
+    if (not HotStreakHandlerSOD:isSpellTracked(spellID)) then return end
+
+    local amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing, isOffHand = select(15, CombatLogGetCurrentEventInfo()); -- For SPELL_DAMAGE*
+
+    if (HotStreakHandlerSOD.state == 'cold') then
+        if (critical) then
+            -- A crit while cold => Heating Up!
+            HotStreakHandlerSOD.state = 'heating_up';
+            activateHeatingUp(self, heatingUpSpellIDSOD);
+        end
+    elseif (HotStreakHandlerSOD.state == 'heating_up') then
+        if (not critical) then
+            -- No crit while Heating Up => cooling down
+            HotStreakHandlerSOD.state = 'cold';
+            deactivateHeatingUp(self, heatingUpSpellIDSOD);
+        -- else
+            -- We could put the state to 'hot_streak' here, but the truth is, we don't know for sure if it's accurate
+            -- Either way, if the Hot Streak buff is deserved, we'll know soon enough with a "SPELL_AURA_APPLIED"
+        end
+    elseif (HotStreakHandlerSOD.state == 'hot_streak') then
+        if (critical) then
+            -- If crit during a Hot Streak, store this 'charge' to eventually restore it when Pyroblast is cast
+            -- This is called "hot streaking heating up", which means Hot Streak has a pending Heating Up effect
+            HotStreakHandlerSOD.state = 'hot_streak_heating_up';
+            activateHeatingUp(self, hotStreakHeatingUpSpellIDSOD);
+            -- Please note this works only because we are fairly certain that SPELL_AURA_APPLIED of a Hot Streak
+            -- always occur *after* the critical effect of the spell which triggered it.
+            -- Should it be the other way around (SPELL_AURA_APPLIED before SPELL_DAMAGE, or worse, random order)
+            -- we would be in big trouble to know whether the crit is piling up before or after a Hot Streak.
+        end
+    elseif (HotStreakHandlerSOD.state == 'hot_streak_heating_up') then
+        if (not critical) then
+            -- If Hot Streak had a pending Heating Up effect but a spell did not crit afterwards, the pending Heating Up is lost
+            HotStreakHandlerSOD.state = 'hot_streak';
+            deactivateHeatingUp(self, hotStreakHeatingUpSpellIDSOD);
+        end
+    else
+        print("Unknown HotStreakHandler state");
+    end
+end
 
 -- Detect if the target is Frozen
 local FrozenHandler = {
@@ -479,9 +627,12 @@ local function registerClass(self)
     self:RegisterAura("impact", 0, 64343, "lock_and_load", "Top", 1, 255, 255, 255, true, { (GetSpellInfo(2136)) });
     self:RegisterAura("firestarter", 0, 54741, "impact", "Top", 0.8, 255, 255, 255, true, { (GetSpellInfo(2120)) }); -- May conflict with Impact location
     self:RegisterAura("hot_streak_full", 0, hotStreakSpellID, "hot_streak", "Left + Right (Flipped)", 1, 255, 255, 255, true, { (GetSpellInfo(11366)) });
+    self:RegisterAura("hot_streak_full", 0, hotStreakSpellIDSOD, "hot_streak", "Left + Right (Flipped)", 1, 255, 255, 255, true, { (GetSpellInfo(11366)) });
     self:RegisterAura("hot_streak_half", 0, heatingUpSpellID, "hot_streak", "Left + Right (Flipped)", 0.5, 255, 255, 255, false); -- Does not exist, but define it for option testing
     self:RegisterAura("hot_streak_duo", 0, hotStreakHeatingUpSpellID, "hot_streak", "Left + Right (Flipped)", 0.5, 255, 255, 255, false); -- Does not exist, but define it for option testing
     self:RegisterAura("hot_streak_duo", 0, hotStreakHeatingUpSpellID, "hot_streak", "Left + Right (Flipped)", 1, 255, 255, 255, true); -- Does not exist, but define it for option testing
+    self:RegisterAura("hot_streak_duo", 0, hotStreakHeatingUpSpellIDSOD, "hot_streak", "Left + Right (Flipped)", 0.5, 255, 255, 255, false); -- Does not exist, but define it for option testing
+    self:RegisterAura("hot_streak_duo", 0, hotStreakHeatingUpSpellIDSOD, "hot_streak", "Left + Right (Flipped)", 1, 255, 255, 255, true); -- Does not exist, but define it for option testing
     -- Heating Up (spellID == 48107) doesn't exist in Wrath Classic, so we can't use the above aura
     -- Instead, we track Fire Blast, Fireball, Living Bomb and Scorch non-periodic critical strikes
     -- Please look at HotStreakHandler and customCLEU for more information
@@ -531,8 +682,11 @@ local function loadOptions(self)
 
     local heatingUpBuff = heatingUpSpellID; -- Not really a buff
     local hotStreakBuff = hotStreakSpellID;
+    local hotStreakBuffSOD = hotStreakSpellIDSOD;
     local hotStreakHeatingUpBuff = hotStreakHeatingUpSpellID; -- Made up
+    local hotStreakHeatingUpBuffSOD = hotStreakHeatingUpSpellIDSOD; -- Made up
     local hotStreakTalent = 44445;
+    local hotStreakTalentSOD = 400625;
 
     local firestarterBuff = 54741;
     local firestarterTalent = 44442;
@@ -557,6 +711,7 @@ local function loadOptions(self)
     local fireBlast = 2136;
     local fireball = 133;
     local frostfireBolt = 44614;
+    local frostfireboltSOD = 401502;
     local iceLance = FrozenHandler.ice_lance[1];
     local iceLanceSoD = FrozenHandler.ice_lance_sod[1];
     local deepFreeze = FrozenHandler.deep_freeze[1];
@@ -586,6 +741,7 @@ local function loadOptions(self)
     -- local spellName, _, spellIcon = GetSpellInfo(pyroblast);
     -- local hotStreakDetails = string.format(LFG_READY_CHECK_PLAYER_IS_READY, "|T"..spellIcon..":0|t "..spellName):gsub("%.", "");
     local hotStreakDetails = GetSpellInfo(hotStreakBuff);
+    local hotStreakDetailsSOD = GetSpellInfo(hotStreakBuffSOD);
 
     -- local hotStreakHeatingUpDetails = string.format("%s+%s", heatingUpDetails, hotStreakDetails);
     local hotStreakHeatingUpDetails = string.format("%s %s", STATUS_TEXT_BOTH, ACTION_SPELL_AURA_APPLIED_DOSE);
@@ -605,6 +761,11 @@ local function loadOptions(self)
     self:AddOverlayOption(hotStreakTalent, heatingUpBuff, 0, heatingUpDetails);
     self:AddOverlayOption(hotStreakTalent, hotStreakBuff, 0, hotStreakDetails);
     self:AddOverlayOption(hotStreakTalent, hotStreakHeatingUpBuff, 0, hotStreakHeatingUpDetails);
+    if self.IsSOD() then
+        self:AddOverlayOption(hotStreakTalentSOD, heatingUpBuffSOD, 0, heatingUpDetailsSOD);
+        self:AddOverlayOption(hotStreakTalentSOD, hotStreakBuffSOD, 0, hotStreakDetailsSOD);
+        self:AddOverlayOption(hotStreakTalentSOD, hotStreakHeatingUpBuffSOD, 0, hotStreakHeatingUpDetailsSOD);
+    end
     self:AddOverlayOption(firestarterTalent, firestarterBuff);
     self:AddOverlayOption(impactTalent, impactBuff);
     if self.IsWrath() then
