@@ -162,7 +162,7 @@ SAO.defaults = {
                     [0] = false,
                 },
                 [448777] = { -- Hot Streak SOD + Heating Up (not an actual buff)
-                [0] = false,
+                    [0] = false,
                 },
                 [5276] = { -- Representative of spells triggering Frozen effect
                     [0] = false,
@@ -177,6 +177,9 @@ SAO.defaults = {
                     [1449] = false, -- Arcane Explosion
                 },
                 [48108] = { -- Hot Streak
+                    [11366] = true, -- Pyroblast
+                },
+                [400625] = { -- Hot Streak SOD
                     [11366] = true, -- Pyroblast
                 },
                 [64343] = { -- Impact
